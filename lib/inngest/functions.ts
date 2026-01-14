@@ -108,13 +108,35 @@ export const sendDailyNewsSummary = inngest.createFunction(
 
         // Step #4: Send the emails
         await step.run('send-news-emails', async () => {
-                await Promise.all(
-                    userNewsSummaries.map(async ({ user, newsContent}) => {
-                        if(!newsContent) return false;
+                const tasks = userNewsSummaries.map(({ user, newsContent }) => {
+                    if (!newsContent) {
+                        // Mark skipped so we can log it after settling
+                        return Promise.resolve({ skipped: true, user });
+                    }
 
-                        return await sendNewsSummaryEmail({ email: user.email, date: getFormattedTodayDate(), newsContent })
+                    // Attempt to send and carry user context for error reporting
+                    return sendNewsSummaryEmail({
+                        email: user.email,
+                        date: getFormattedTodayDate(),
+                        newsContent,
                     })
-                )
+                        .then((res) => ({ skipped: false, user, res }))
+                        .catch((error) => Promise.reject({ error, user }));
+                });
+
+                const settled = await Promise.allSettled(tasks);
+
+                settled.forEach((result) => {
+                    if (result.status === 'fulfilled') {
+                        const value: any = result.value;
+                        if (value && value.skipped) {
+                            console.warn('daily-news: skipped email due to empty newsContent', value.user?.email);
+                        }
+                    } else {
+                        const reason: any = result.reason;
+                        console.error('daily-news: failed to send news email', reason?.user?.email, reason?.error || reason);
+                    }
+                });
             })
 
         return { success: true, message: 'Daily news summary emails sent successfully' }
